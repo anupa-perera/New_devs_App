@@ -1,3 +1,4 @@
+from decimal import Decimal, ROUND_HALF_UP
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, Any
 from app.services.cache import get_revenue_summary
@@ -19,12 +20,16 @@ async def get_dashboard_summary(
         raise HTTPException(status_code=403, detail="No tenant associated with this account")
     
     revenue_data = await get_revenue_summary(property_id, tenant_id)
-    
-    total_revenue_float = float(revenue_data['total'])
-    
+
+    # Money stays a Decimal serialized as a string — never a binary float — so the
+    # NUMERIC(10,3) sub-cent precision survives to the client intact.
+    total_revenue = str(
+        Decimal(revenue_data['total']).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+    )
+
     return {
         "property_id": revenue_data['property_id'],
-        "total_revenue": total_revenue_float,
+        "total_revenue": total_revenue,
         "currency": revenue_data['currency'],
         "reservations_count": revenue_data['count']
     }

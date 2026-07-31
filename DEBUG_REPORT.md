@@ -101,7 +101,30 @@ tenant (403) rather than bucketing them together.
   keys: `revenue:tenant-a:prop-001` and `revenue:tenant-b:prop-001`.
 
 ## Bug 4 — Money precision `[P1]`
-_(pending)_
+
+**Symptom (Finance):** Some revenue totals were "slightly off by a few cents."
+
+**How I found it:** `total_amount` is `NUMERIC(10,3)` — deliberately sub-cent (`schema.sql:28`). Followed
+the value out of the DB: `float()` at `dashboard.py:18`, then `Math.round(x*100)/100` +
+`maximumFractionDigits: 2` at `RevenueSummary.tsx:64,81`. The seed rows `333.333 + 333.333 + 333.334`
+(`seed.sql:24-26`) are shaped to expose it, and the UI even shipped a **"Precision Mismatch Detected"**
+banner (`RevenueSummary.tsx:107`) — a built-in detector for this exact bug.
+
+**Root cause:** two independent precision losses — the API cast the exact `Decimal` to a binary `float`
+(`dashboard.py`), and the UI re-rounded to 2 decimals, discarding the schema's 3rd decimal.
+
+**The fix:** keep `Decimal` end-to-end and serialize money as a **string**
+(`quantize(Decimal("0.001"), ROUND_HALF_UP)`); type `total_revenue` as `string` on the client, drop the
+`Math.round` round-trip, and group the integer part for display without ever touching a float.
+
+**Verified by:** Raw API now returns quoted strings matching `psql` **char-for-char** —
+`prop-001 "2250.000"`, `prop-002 "4975.500"`, `prop-003 "6100.500"` (previously floats like `4975.5`,
+silently dropping the 3rd decimal). Browser confirms the same, logged in for real as each client:
+Sunset's dashboard shows **`USD 2,250.000`** for prop-001; Ocean's shows **`USD 0.000`** — full 3-decimal
+precision on screen, "Precision Mismatch Detected" banner removed (the loss it detected no longer
+exists). The Ocean screenshot is also live proof Bug 3 is fixed under a real logged-in session, not just
+a forged token — the property *label* still reads "Beach House Alpha" for Ocean's prop-001, which is the
+separate, not-yet-fixed Bug 6 (hardcoded property list/names).
 
 ## Bug 5 — Timezone month boundaries `[P1]`
 _(pending)_

@@ -78,7 +78,27 @@ returned **HTTP 500**, never a fabricated number — this also confirms Bug 1's 
 > `0.000`. That order-dependent cross-tenant bleed is **Bug 3**, reproduced and fixed next.
 
 ## Bug 3 — Cross-tenant cache leak `[P0, privacy]`
-_(pending)_
+
+**Symptom (Client B):** "Sometimes when we refresh the page, we see revenue numbers that look like they
+belong to another company."
+
+**How I found it:** "Sometimes on refresh" implied shared *state*, not logic. `cache.py:13` had no tenant
+in the key, and `seed.sql:8-9` shows `prop-001` under both tenants. I reproduced it directly while
+verifying Bug 2.
+
+**Root cause:** `cache.py:13` — `cache_key = f"revenue:{property_id}"`. Whichever tenant loads a shared
+property first populates `revenue:prop-001`; for the next 300s (the TTL) the other tenant gets a cache
+hit and is served **that tenant's** revenue — the intermittency tracks the 5-minute TTL. Secondary path:
+`dashboard.py:14` collapsed any unresolved tenant into one shared `"default_tenant"` bucket.
+
+**The fix:** key by tenant — `revenue:{tenant_id}:{property_id}`; and reject requests with no resolved
+tenant (403) rather than bucketing them together.
+
+**Verified by (reproduced, then fixed):**
+- *Before:* flush Redis → Sunset `prop-001` = `2250.000`, then Ocean `prop-001` = **`2250.000`** (should
+  be `0`). Reverse order leaked the other way (Sunset saw Ocean's `0.000`). One key: `revenue:prop-001`.
+- *After:* both orderings correct — Sunset `2250.000 / 4`, Ocean `0.000 / 0` — and Redis holds **two**
+  keys: `revenue:tenant-a:prop-001` and `revenue:tenant-b:prop-001`.
 
 ## Bug 4 — Money precision `[P1]`
 _(pending)_

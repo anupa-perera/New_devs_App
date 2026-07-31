@@ -200,3 +200,18 @@ the dead `X-Simulated-Tenant` header and the `debugTenant`/`activeTenant` plumbi
 - `schema.sql:35-36` enables RLS on `properties`/`reservations` but defines **zero policies**, and the
   app connects as superuser `postgres` → RLS is bypassed entirely. Policies are a design change.
 - `print()` debug statements (`reservations.py`) should be `logger` calls.
+- `tenant_resolver.py:92` defaults any unrecognized email to `tenant-a` rather than rejecting — a latent
+  isolation smell outside the 6 fixes above (only the two provided challenge logins are exercised here).
+
+## Video walkthrough — running order (severity order, 5–10 min cap)
+
+| Order | Bug | Why this position | Budget |
+|---|---|---|---|
+| 1 | Bug 3 — cross-tenant cache leak | Highest severity: a real privacy breach (Client B's complaint) | ~2.5 min |
+| 2 | Bug 5 — timezone month boundaries | Data accuracy: Client A's exact complaint, board-meeting stakes | ~2.5 min |
+| 3 | Bug 4 — money precision | Lower stakes, still client-visible (finance's "few cents") | ~1.5 min |
+| 4 | Bugs 1, 2, 6 (grouped) | Root-cause/infra enablers and minor isolation gap — mention briefly as what made 3/4/5 possible and demonstrable | ~2.5 min |
+
+Total ≈ 9 min. Bugs 1 and 2 are the shared root cause behind everything (the DB was never read; the
+session code was broken underneath it) — they're most efficiently narrated as *why* fixing 3/4/5 was
+even possible, rather than as their own standalone segments.

@@ -163,7 +163,38 @@ challenge logins):
   was added, per the "do not rebuild" constraint; only the endpoint needed the optional params.
 
 ## Bug 6 — Property selector not tenant-scoped `[P2]`
-_(pending)_
+
+**Symptom:** Logged in as Ocean, the property selector listed Sunset's "City Apartment Downtown", and
+`prop-001` was labeled "Beach House Alpha" (Sunset's property) instead of Ocean's actual "Mountain Lodge
+Beta".
+
+**How I found it:** `Dashboard.tsx:4-10` hardcoded a hardcoded 5-property array spanning **both**
+tenants, rendered identically for every user, independent of who was logged in.
+
+**Root cause:** the property list was a static constant, never fetched from any tenant-aware source.
+Investigating further: no `/api/v1/properties` endpoint existed in this backend at all — the frontend's
+`SecureAPI.getProperties()` pointed at a route that was never implemented in this challenge build. There
+was also a separate, misleading vestige: `secureApi.ts`'s `getDashboardSummary` sent an
+`X-Simulated-Tenant` header from `RevenueSummary`'s `debugTenant` prop — grepping the backend confirms it
+is **never read anywhere**, so a client could set that header to any value with zero effect. Dead code
+that implies a client can assert its own tenant is worth removing on its own merits.
+
+**The fix:** add a minimal `GET /api/v1/properties` endpoint (`properties.py`) that filters by the
+authenticated user's `tenant_id` — mirroring `dashboard.py`'s existing auth pattern, not a new
+architecture. `Dashboard.tsx` now fetches this list on mount instead of using a hardcoded array. Removed
+the dead `X-Simulated-Tenant` header and the `debugTenant`/`activeTenant` plumbing that sent it.
+
+**Verified by** (API, then real logged-in browser sessions):
+- `GET /api/v1/properties` as Sunset → `prop-001 "Beach House Alpha"`, `prop-002 "City Apartment
+  Downtown"`, `prop-003 "Country Villa Estate"`.
+- Same endpoint as Ocean → `prop-001 "Mountain Lodge Beta"`, `prop-004 "Lakeside Cottage"`, `prop-005
+  "Urban Loft Modern"` — correct name for the shared ID.
+- Cross-tenant probe: Ocean requesting `prop-002` (a tenant-a-only property) via the dashboard endpoint
+  returns `"0.000" / 0`, never tenant-a's real data.
+- Browser, logged in as each client: Sunset's selector lists only her 3 properties; Ocean's selector
+  lists only his 3, with `prop-001` correctly reading **"Mountain Lodge Beta"**.
+- The `X-Simulated-Tenant` header is now gone from the codebase entirely, and every check above still
+  passes — confirming it never mattered.
 
 ## Out of scope (reported, not fixed)
 - `schema.sql:35-36` enables RLS on `properties`/`reservations` but defines **zero policies**, and the

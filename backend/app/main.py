@@ -90,6 +90,12 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting up...")
 
+    # Initialize the application database pool once (used by revenue queries).
+    # create_async_engine is lazy, so this does not block on DB reachability.
+    from .core.database_pool import db_pool
+    await db_pool.initialize()
+    logger.info("✅ Application database pool initialized")
+
     # Initialize Supabase connection pool
     try:
         from .core.supabase_connection_pool import supabase_pool

@@ -36,55 +36,51 @@ async def calculate_total_revenue(property_id: str, tenant_id: str) -> Dict[str,
     Aggregates revenue from database.
     """
     try:
-        # Import database pool
-        from app.core.database_pool import DatabasePool
-        
-        # Initialize pool if needed
-        db_pool = DatabasePool()
+        # Use the shared, app-lifetime connection pool (initialized once at startup).
+        from app.core.database_pool import db_pool
+
+        # Idempotent: no-op if the startup hook already initialized the pool.
         await db_pool.initialize()
-        
-        if db_pool.session_factory:
-            async with db_pool.get_session() as session:
-                # Use SQLAlchemy text for raw SQL
-                from sqlalchemy import text
-                
-                query = text("""
-                    SELECT 
-                        property_id,
-                        SUM(total_amount) as total_revenue,
-                        COUNT(*) as reservation_count
-                    FROM reservations 
-                    WHERE property_id = :property_id AND tenant_id = :tenant_id
-                    GROUP BY property_id
-                """)
-                
-                result = await session.execute(query, {
-                    "property_id": property_id, 
-                    "tenant_id": tenant_id
-                })
-                row = result.fetchone()
-                
-                if row:
-                    total_revenue = Decimal(str(row.total_revenue))
-                    return {
-                        "property_id": property_id,
-                        "tenant_id": tenant_id,
-                        "total": str(total_revenue),
-                        "currency": "USD", 
-                        "count": row.reservation_count
-                    }
-                else:
-                    # No reservations found for this property
-                    return {
-                        "property_id": property_id,
-                        "tenant_id": tenant_id,
-                        "total": "0.00",
-                        "currency": "USD",
-                        "count": 0
-                    }
-        else:
-            raise Exception("Database pool not available")
-            
+
+        async with db_pool.session_factory() as session:
+            # Use SQLAlchemy text for raw SQL
+            from sqlalchemy import text
+
+            query = text("""
+                SELECT
+                    property_id,
+                    SUM(total_amount) as total_revenue,
+                    COUNT(*) as reservation_count
+                FROM reservations
+                WHERE property_id = :property_id AND tenant_id = :tenant_id
+                GROUP BY property_id
+            """)
+
+            result = await session.execute(query, {
+                "property_id": property_id,
+                "tenant_id": tenant_id
+            })
+            row = result.fetchone()
+
+            if row:
+                total_revenue = Decimal(str(row.total_revenue))
+                return {
+                    "property_id": property_id,
+                    "tenant_id": tenant_id,
+                    "total": str(total_revenue),
+                    "currency": "USD",
+                    "count": row.reservation_count
+                }
+            else:
+                # No reservations found for this property
+                return {
+                    "property_id": property_id,
+                    "tenant_id": tenant_id,
+                    "total": "0.00",
+                    "currency": "USD",
+                    "count": 0
+                }
+
     except Exception as e:
         # No fabricated fallback. Presenting invented financial figures as authoritative
         # is worse than an error, so surface the failure instead of masking it.

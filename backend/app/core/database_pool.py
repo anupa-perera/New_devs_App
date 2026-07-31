@@ -12,6 +12,11 @@ class DatabasePool:
         
     async def initialize(self):
         """Initialize database connection pool against the application database."""
+        # Idempotent: the pool is a process-wide singleton created once at startup and
+        # reused for every request. Re-initializing would leak engines/connections.
+        if self.session_factory is not None:
+            return
+
         # settings.database_url is a sync-style DSN; SQLAlchemy's async engine needs
         # the asyncpg driver, so rewrite only the scheme. Let any failure propagate —
         # a database we can't reach must surface loudly, never fall back to fake data.
@@ -54,5 +59,5 @@ db_pool = DatabasePool()
 
 async def get_db_session() -> AsyncSession:
     """Dependency to get database session"""
-    async with db_pool.get_session() as session:
+    async with db_pool.session_factory() as session:
         yield session

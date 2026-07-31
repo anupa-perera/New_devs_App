@@ -52,7 +52,30 @@ Bug 2, once the pool's sessions work.
 ---
 
 ## Bug 2 — Async session handling `[P0, blocker]`
-_(pending)_
+
+**Symptom:** With Bug 1 fixed, every dashboard request returned HTTP 500.
+
+**How I found it:** The 500 traceback pointed straight at `reservations.py:47` —
+`TypeError: 'coroutine' object does not support the asynchronous context manager protocol`.
+
+**Root cause:** two issues in `calculate_total_revenue`:
+- `db_pool.get_session()` is `async def` and *returns* a session, so `async with db_pool.get_session()`
+  tried to enter a **coroutine** (no `__aenter__`) → `TypeError`.
+- `db_pool = DatabasePool()` built a **new pool/engine per request**, ignoring the module-level singleton
+  and leaking connections. The same coroutine bug also sat in the `get_db_session` dependency.
+
+**The fix:** use `async with db_pool.session_factory() as session`; import the module-level `db_pool`
+singleton; make `initialize()` idempotent and run it once from the `main.py` startup hook; fix
+`get_db_session` the same way.
+
+**Verified by:** `prop-001` → Sunset `2250.000 / 4`, Ocean (queried first, uncached) `0.000 / 0`;
+prop-002 `4975.50 / 4`, prop-003 `6100.50 / 2` — all matching the `psql` ground truth. No coroutine error.
+Postgres connections stayed flat at **2** across repeated requests (no per-request engine leak). Startup
+log shows `✅ Application database pool initialized`. Stopping the DB and querying an uncached property
+returned **HTTP 500**, never a fabricated number — this also confirms Bug 1's fail-loud gate.
+
+> Observed en route: Sunset-first made Ocean see Sunset's `2250.000`, and Ocean-first made Sunset see
+> `0.000`. That order-dependent cross-tenant bleed is **Bug 3**, reproduced and fixed next.
 
 ## Bug 3 — Cross-tenant cache leak `[P0, privacy]`
 _(pending)_

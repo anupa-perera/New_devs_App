@@ -1,35 +1,78 @@
-from datetime import datetime
+from datetime import datetime, timezone as dt_timezone
 from decimal import Decimal
-from typing import Dict, Any, List
+from typing import Dict, Any
+from zoneinfo import ZoneInfo
 
-async def calculate_monthly_revenue(property_id: str, month: int, year: int, db_session=None) -> Decimal:
-    """
-    Calculates revenue for a specific month.
-    """
 
-    start_date = datetime(year, month, 1)
-    if month < 12:
-        end_date = datetime(year, month + 1, 1)
-    else:
-        end_date = datetime(year + 1, 1, 1)
-        
-    print(f"DEBUG: Querying revenue for {property_id} from {start_date} to {end_date}")
-
-    # SQL Simulation (This would be executed against the actual DB)
-    query = """
-        SELECT SUM(total_amount) as total
-        FROM reservations
-        WHERE property_id = $1
-        AND tenant_id = $2
-        AND check_in_date >= $3
-        AND check_in_date < $4
+async def calculate_monthly_revenue(
+    property_id: str, tenant_id: str, month: int, year: int
+) -> Dict[str, Any]:
     """
-    
-    # In production this query executes against a database session.
-    # result = await db.fetch_val(query, property_id, tenant_id, start_date, end_date)
-    # return result or Decimal('0')
-    
-    return Decimal('0') # Placeholder for now until DB connection is finalized
+    Calculates revenue for a specific calendar month, in the property's own timezone.
+
+    Properties span multiple timezones (Paris, New York, ...). A reservation whose
+    check-in is, say, 2024-02-29 23:30 UTC is already 2024-03-01 00:30 local time in a
+    UTC+1 property — it belongs to March locally even though it's still February in UTC.
+    Bucketing by naive UTC month boundaries silently moves such reservations into the
+    wrong month, which is exactly the kind of discrepancy clients notice in their totals.
+    """
+    from app.core.database_pool import db_pool
+    from sqlalchemy import text
+
+    await db_pool.initialize()
+
+    async with db_pool.session_factory() as session:
+        tz_result = await session.execute(
+            text("SELECT timezone FROM properties WHERE id = :property_id AND tenant_id = :tenant_id"),
+            {"property_id": property_id, "tenant_id": tenant_id},
+        )
+        tz_row = tz_result.fetchone()
+        if not tz_row:
+            raise ValueError(f"Property {property_id} not found for tenant {tenant_id}")
+
+        property_tz = ZoneInfo(tz_row.timezone)
+
+        start_local = datetime(year, month, 1, tzinfo=property_tz)
+        if month < 12:
+            end_local = datetime(year, month + 1, 1, tzinfo=property_tz)
+        else:
+            end_local = datetime(year + 1, 1, 1, tzinfo=property_tz)
+
+        # Convert the local-time month boundaries to UTC to compare against
+        # check_in_date, which Postgres stores as TIMESTAMP WITH TIME ZONE (UTC).
+        start_utc = start_local.astimezone(dt_timezone.utc)
+        end_utc = end_local.astimezone(dt_timezone.utc)
+
+        result = await session.execute(
+            text("""
+                SELECT SUM(total_amount) as total_revenue, COUNT(*) as reservation_count
+                FROM reservations
+                WHERE property_id = :property_id AND tenant_id = :tenant_id
+                AND check_in_date >= :start_utc AND check_in_date < :end_utc
+            """),
+            {
+                "property_id": property_id,
+                "tenant_id": tenant_id,
+                "start_utc": start_utc,
+                "end_utc": end_utc,
+            },
+        )
+        row = result.fetchone()
+
+        if row and row.total_revenue is not None:
+            total_revenue = Decimal(str(row.total_revenue))
+            count = row.reservation_count
+        else:
+            total_revenue = Decimal("0")
+            count = 0
+
+        return {
+            "property_id": property_id,
+            "tenant_id": tenant_id,
+            "total": str(total_revenue),
+            "currency": "USD",
+            "count": count,
+        }
 
 async def calculate_total_revenue(property_id: str, tenant_id: str) -> Dict[str, Any]:
     """

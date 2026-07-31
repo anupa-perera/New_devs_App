@@ -127,7 +127,40 @@ a forged token — the property *label* still reads "Beach House Alpha" for Ocea
 separate, not-yet-fixed Bug 6 (hardcoded property list/names).
 
 ## Bug 5 — Timezone month boundaries `[P1]`
-_(pending)_
+
+**Symptom (Client A):** "The revenue numbers on your dashboard don't match our internal records... we're
+showing different totals for March."
+
+**How I found it:** `properties.timezone` exists (`schema.sql:16`) and is populated (`Europe/Paris`,
+`America/New_York` — `seed.sql:8-13`), but grepping the codebase shows it is **never read anywhere**. A
+populated column no code touches is a strong bug signal.
+
+**Root cause:** `calculate_monthly_revenue` (`reservations.py`) built month boundaries as naive
+`datetime(year, month, 1)` — implicitly UTC midnight — while `check_in_date` is a real UTC timestamp and
+properties are not in UTC. Proof row `res-tz-1`: check-in `2024-02-29 23:30:00+00` = **2024-03-01 00:30
+Paris local**. For a Paris property this is a March booking; naive-UTC boundary math filed it under
+February, silently dropping €1250 from Client A's March total. (The function was also dead code —
+returned a hardcoded `Decimal('0')`, never called by the live endpoint.)
+
+**The fix:** repair the function to load the property's own `timezone`, build month boundaries with
+`zoneinfo.ZoneInfo` in that timezone, convert to UTC only for the query, and run the real aggregate
+against the database. Wire it into `/api/v1/dashboard/summary` behind **optional** `month`/`year` query
+params — omitting them preserves the existing all-time behavior exactly, so nothing was rebuilt.
+
+**Verified by** (`/api/v1/dashboard/summary?property_id=...&month=...&year=...`, tokens from the two
+challenge logins):
+- Paris, tenant-a, **March 2024** → `"2250.000" / 4` — includes `res-tz-1`'s €1250.
+- Paris, tenant-a, **February 2024** → `"0.000" / 0` — `res-tz-1` moved out, not double-counted.
+- **All-time** (no params) still → `"2250.000" / 4` — March + Feb reconstruct the all-time total exactly;
+  the new params are additive, the old path is untouched.
+- New York, tenant-b, `prop-004`, **March 2024** → `"1776.500" / 4`, identical to its all-time figure —
+  confirms the boundary is driven by *that property's own* timezone, not a Paris hardcode (this property
+  has no boundary-straddling reservation, so nothing should move, and nothing did).
+- Cross-check: the naive-UTC ("buggy") March figure is mathematically `1000.000 / 3` (the three
+  `333.33x` rows, excluding `res-tz-1`) — this is exactly the mock value captured in Bug 1's baseline,
+  confirming the mock data was itself seeded from the buggy calculation.
+- Demoed via `:8000/docs` (Swagger) / direct API calls — the dashboard UI has no month selector and none
+  was added, per the "do not rebuild" constraint; only the endpoint needed the optional params.
 
 ## Bug 6 — Property selector not tenant-scoped `[P2]`
 _(pending)_
